@@ -1,4 +1,4 @@
-import * as natural from 'natural'
+import { pipeline } from '@huggingface/transformers'
 
 import {
   OutputSchema as RepoEvent,
@@ -6,16 +6,18 @@ import {
 } from './lexicon/types/com/atproto/sync/subscribeRepos'
 import { FirehoseSubscriptionBase, getOpsByType } from './util/subscription'
 
-const Analyzer = natural.SentimentAnalyzer
-const stemmer = natural.PorterStemmer
-const analyzer = new Analyzer('English', stemmer, 'afinn')
+// https://huggingface.co/Xenova/twitter-roberta-base-sentiment-latest
+// https://huggingface.co/docs/hub/transformers-js
+// https://huggingface.co/cardiffnlp/twitter-roberta-base-sentiment-latest
 
-function interpretSentiment(score: number) {
-  if (score > 0.5) return 'Strongly Positive'
-  if (score > 0) return 'Positive'
-  if (score === 0) return 'Neutral'
-  if (score > -0.5) return 'Negative'
-  return 'Strongly Negative'
+let pipe
+async function getPipe() {
+  if (pipe) return pipe
+  pipe = await pipeline(
+    'text-classification',
+    'Xenova/twitter-roberta-base-sentiment-latest',
+  )
+  return pipe
 }
 
 export class FirehoseSubscription extends FirehoseSubscriptionBase {
@@ -43,16 +45,17 @@ export class FirehoseSubscription extends FirehoseSubscriptionBase {
       .filter((create) => {
         return create.record.langs?.indexOf('en') !== -1
       })
-      .filter((create) => {
-        const result = analyzer.getSentiment(create.record.text.split(' '))
-        const humanReadable = interpretSentiment(result)
-        if (result > 0.5) {
-          console.log(`message: Score is ${result} - ${humanReadable}
-            post: ${create.record.text}\n`)
-        } else {
-          console.log(`Ignored message, result=${humanReadable}`)
+      .filter(async (create) => {
+        const out = (await (await getPipe())(create.record.text))[0]
+        const score = out.score
+        const label = out.label
+        if (label != 'positive') {
+          console.log(`Ignored message, result=${label}`)
+          return false
         }
-        return result > 0.5
+        console.log(`message: Score is ${score} - ${label}
+          post: ${create.record.text}\n`)
+        return true
       })
       .map((create) => {
         // console.table(create)
